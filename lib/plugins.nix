@@ -80,32 +80,50 @@ let
       # An empty hash is the discovery mode: fakeHash lets evaluation proceed
       # and Nix reports the actual recursive hash at build time.
       outputHash = if hash == "" then lib.fakeHash else hash;
-      nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm ];
+      nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm pkgs.cacert ];
       impureEnvVars = pkgs.lib.fetchers.proxyImpureEnvVars ++ [ "NIX_NPM_REGISTRY" ];
       buildCommand = ''
         export HOME=/build/home
+        export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+        export NODE_EXTRA_CA_CERTS=$SSL_CERT_FILE
         mkdir -p "$HOME"
         pnpm config set store-dir /build/pnpm-store
         mkdir -p /build/project
         cd /build/project
-        printf '%s' '{"name":"dsh-profile-plugins","private":true,"version":"0.0.0","type":"module"}' > package.json
+        printf '%s\n' '{"name":"dsh-profile-plugins","private":true,"version":"0.0.0","type":"module"}' > package.json
+        cat > pnpm-workspace.yaml <<'EOF'
+        packages:
+          - .
+        nodeLinker: hoisted
+        peerDependencyRules:
+          ignoreMissing:
+            - "@deepseek-ai/*"
+        EOF
+        # DSH supplies @deepseek-ai/* peers from the host installation at runtime;
+        # mark them optional for pnpm resolution while still auto-installing third-party peers.
+        cat > .pnpmfile.cjs <<'EOF'
+        module.exports = {
+          hooks: {
+            readPackage(pkg) {
+              if (pkg.peerDependencies) {
+                pkg.peerDependenciesMeta = pkg.peerDependenciesMeta || {};
+                for (const k of Object.keys(pkg.peerDependencies)) {
+                  if (k.startsWith('@deepseek-ai/')) {
+                    pkg.peerDependenciesMeta[k] = { optional: true };
+                  }
+                }
+              }
+              return pkg;
+            }
+          }
+        };
+        EOF
         ${specCopies}
         pnpm add --package-import-method=copy ${lib.escapeShellArgs contextualSpecs}
         node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("package.json")); p.dependencies=Object.fromEntries(Object.keys(p.dependencies||{}).map(k=>[k,"0.0.0"])); fs.writeFileSync("package.json", JSON.stringify(p));'
-        mkdir -p node_modules/.dsh-spec
-        node -e 'const fs=require("fs"); const p=JSON.parse(fs.readFileSync("package.json")); for (const k of Object.keys(p.dependencies||{})) console.log(k);' |
-          while IFS= read -r packageName; do
-            [ -e "node_modules/$packageName" ] || continue
-            sourcePath=$(readlink -f "node_modules/$packageName")
-            stablePath="node_modules/.dsh-spec/$packageName"
-            mkdir -p "$(dirname "$stablePath")"
-            cp -rL "$sourcePath" "$stablePath"
-            rm -rf "node_modules/$packageName"
-            ln -s "$(realpath --relative-to="$(dirname "node_modules/$packageName")" "$stablePath")" "node_modules/$packageName"
-          done
         rm -rf node_modules/.pnpm
-        rm -f pnpm-lock.yaml node_modules/.pnpm/lock.yaml
-        rm -rf node_modules/.cache node_modules/.modules.yaml node_modules/.pnpm-workspace-state-v1.json
+        rm -f pnpm-lock.yaml pnpm-workspace.yaml .pnpmfile.cjs node_modules/.pnpm/lock.yaml
+        rm -rf node_modules/.cache node_modules/.modules.yaml node_modules/.package-map.json node_modules/.pnpm-workspace-state-v1.json
         cp -r . "$out"
       '';
     };

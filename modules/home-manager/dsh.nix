@@ -79,7 +79,7 @@ let
       else
         rm -rf "${dir}"
         mkdir -p "${dir}"
-        cp -a ${lib.escapeShellArg artifactString}/. "${dir}/"
+        cp -rL ${lib.escapeShellArg artifactString}/. "${dir}/"
         # cp -a syncs the destination directory attributes (read-only store
         # modes) too; dsh rewrites the profile root cordis.yml on every boot.
         chmod -R u+w "${dir}"

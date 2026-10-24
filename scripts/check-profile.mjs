@@ -60,7 +60,11 @@ const ctx = await boot(NAME, rootConfig, patches, async (hostCtx) => {
   if (PluginPackages) {
     await hostCtx.plugin(PluginPackages, { resolution })
   }
-  provideCmdline(hostCtx, { args, exit: () => {} })
+  provideCmdline(hostCtx, {
+    args,
+    exit: () => {},
+    ready: { onReady: () => () => {} },
+  })
 })
 await ctx.fiber.dispose()
 console.log('CHECK-OK')

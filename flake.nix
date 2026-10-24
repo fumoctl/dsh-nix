@@ -131,7 +131,7 @@
             expected_layers=${lib.escapeShellArg expectedLayers}
             test "$actual_layers" = "$expected_layers"
             test -L ${tuiSpecArtifact}/node_modules/@dsh-nix/tui-core
-            test -L ${tuiSpecArtifact}/node_modules/@dsh-nix
+            test -d ${tuiSpecArtifact}/node_modules/@dsh-nix
 
             touch "$out"
           '';

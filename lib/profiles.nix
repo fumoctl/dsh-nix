@@ -84,8 +84,13 @@ let
             layer=$(printf '%s' "$entry" | jq -r '.name')
             ;;
           spec)
-            layer=$(jq -r --argjson i "$specIndex" '.dependencies | keys_unsorted[$i]' "$specRoot/package.json")
+            packageName=$(jq -r --argjson i "$specIndex" '.dependencies | keys_unsorted[$i]' "$specRoot/package.json")
             specIndex=$((specIndex + 1))
+            if jq -e '((.dsh // {}).bundle // {}).patch != null' "$specRoot/node_modules/$packageName/package.json" >/dev/null; then
+              layer=$packageName
+            else
+              layer=""
+            fi
             ;;
           nix)
             packageName=$(printf '%s' "$entry" | jq -r '.packageName')
@@ -113,9 +118,22 @@ let
       done < <(jq -c '.nixMetadata[]' "$metadata")
 
       if [ -n "$specRoot" ]; then
+        dependencies=$(jq -c --slurpfile spec "$specRoot/package.json" '. + ($spec[0].dependencies // {})' <<<"$dependencies")
         for entry in "$specRoot"/node_modules/*; do
           [ -e "$entry" ] || continue
-          ln -s "$entry" "$out/node_modules/$(basename "$entry")"
+          name=$(basename "$entry")
+          case "$name" in
+            @*)
+              mkdir -p "$out/node_modules/$name"
+              for scoped in "$entry"/*; do
+                [ -e "$scoped" ] || continue
+                ln -s "$scoped" "$out/node_modules/$name/$(basename "$scoped")"
+              done
+              ;;
+            *)
+              ln -s "$entry" "$out/node_modules/$name"
+              ;;
+          esac
         done
       fi
 
