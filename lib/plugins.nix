@@ -80,7 +80,7 @@ let
       # An empty hash is the discovery mode: fakeHash lets evaluation proceed
       # and Nix reports the actual recursive hash at build time.
       outputHash = if hash == "" then lib.fakeHash else hash;
-      nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm pkgs.cacert ];
+      nativeBuildInputs = [ pkgs.nodejs pkgs.pnpm pkgs.git pkgs.cacert ];
       impureEnvVars = pkgs.lib.fetchers.proxyImpureEnvVars ++ [ "NIX_NPM_REGISTRY" ];
       buildCommand = ''
         export HOME=/build/home
