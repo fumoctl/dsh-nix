@@ -146,7 +146,7 @@ overlay is applied, falling back to a self-contained `callPackage` build.
 ### Home Manager
 
 ```nix
-inputs.dsh-nix.url = "github:Samuka007/dsh-nix";
+inputs.dsh-nix.url = "github:fumoctl/dsh-nix";
 inputs.dsh-nix.inputs.nixpkgs.follows = "nixpkgs";
 
 # in your home-manager config:
