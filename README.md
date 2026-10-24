@@ -143,45 +143,186 @@ environment.systemPackages = [ pkgs.dsh ];
 The Home Manager module's `package` option defaults to `pkgs.dsh` when the
 overlay is applied, falling back to a self-contained `callPackage` build.
 
-### Home Manager
+### Home Manager (Complete Example)
+
+Below is a complete, annotated example showing how to wire `dsh-nix` into Home
+Manager with:
+- shared MCP servers (`@deepseek-ai/dsh-mcp-client`, both local `stdio` and remote `streamable-http`) via `userPatches`,
+- a `headless` CLI profile,
+- a `web` profile with a third-party theme plugin (`@nonamelego/dsh-catppuccin`), and
+- a `tui` profile using [`dsh-TUI`](https://github.com/ccch1mneyyy/dsh-TUI) (`@deepseek-harness-tui/dsh-tui`).
+
+Adapt or remove the example MCP servers, plugins, and profiles to match your own setup:
 
 ```nix
+# In your flake.nix inputs:
 inputs.dsh-nix.url = "github:fumoctl/dsh-nix";
 inputs.dsh-nix.inputs.nixpkgs.follows = "nixpkgs";
 
-# in your home-manager config:
+# In your Home Manager module (e.g. home/shell.nix):
 imports = [ inputs.dsh-nix.homeManagerModules.dsh ];
 
-programs.dsh = {
-  enable = true;
-  profiles.headless = {
-    plugins = [ "@deepseek-ai/dsh-base" "@deepseek-ai/dsh-headless" ];
-  };
-  profiles.web = {
-    plugins = [ "@deepseek-ai/dsh-base" "@deepseek-ai/dsh-web-app" ];
-  };
-  profiles.custom = {
-    plugins = [
-      "@deepseek-ai/dsh-base"
-      "github:someone/cool-plugin"          # build-time resolve
+programs.dsh =
+  let
+    # Example shared `userPatches` list.
+    # `@deepseek-ai/dsh-mcp-client` is already bundled inside `pkgs.dsh` (it is a
+    # Cordis plugin, not a profile bundle with `dsh.bundle.patch`), so it is
+    # enabled through `userPatches` with one `insert` entry per MCP server
+    # rather than added to `plugins`.
+    mcpPatches = [
+      {
+        insert = [
+          {
+            # Example 1: Local `stdio` MCP server (here invoking the CLI bundled
+            # inside the VSCodium DBCode extension; tools become `mcp__dbcode__*`).
+            # Always use absolute `/nix/store/...` paths for `command`.
+            id = "mcp-dbcode";                  # unique Cordis entry id
+            name = "@deepseek-ai/dsh-mcp-client";
+            config = {
+              serverName = "dbcode";            # [A-Za-z0-9_-]{1,32}
+              transport = "stdio";
+              command = "${pkgs.bash}/bin/bash";
+              args = [
+                "-c"
+                ''exec ${pkgs.nodejs}/bin/node "$(ls -d "$HOME"/.vscode-oss/extensions/dbcode.dbcode-*/out/cli/dbcode | sort -V | tail -n1)" mcp''
+              ];
+            };
+          }
+          {
+            # Example 2: Remote `streamable-http` MCP server
+            # (tools become `mcp__rivalsearch__*`).
+            id = "mcp-rivalsearch";
+            name = "@deepseek-ai/dsh-mcp-client";
+            config = {
+              serverName = "rivalsearch";
+              transport = "streamable-http";
+              url = "https://RivalSearchMCP.fastmcp.app/mcp";
+            };
+          }
+        ];
+      }
     ];
-    specsHash = "sha256-...";               # pin the resolution
-    userPatchesFile = ./patches.yml;        # profile-level cordis.patch.yml
+  in
+  {
+    enable = true;
+
+    # 1. Headless profile (`dsh --profile headless "task"`):
+    #    Uses only in-box bundles shipped with `pkgs.dsh`, so no `specsHash` is needed.
+    profiles.headless = {
+      plugins = [
+        "@deepseek-ai/dsh-base"      # core services (must come first)
+        "@deepseek-ai/dsh-headless"  # one-shot CLI runner
+      ];
+      userPatches = mcpPatches;
+    };
+
+    # 2. Web UI profile (`dsh --profile web`):
+    #    Combines the in-box web bundle with a third-party npm plugin spec.
+    #    Also syncs Catppuccin palettes to `~/.dsh-tui/themes/` on activation.
+    profiles.web = {
+      plugins = [
+        "@deepseek-ai/dsh-base"
+        "@deepseek-ai/dsh-web-app"
+        "@nonamelego/dsh-catppuccin@0.6.2"  # pnpm spec resolved at build time
+      ];
+      # Pin the fixed-output derivation for all pnpm specs in this profile.
+      # Set `specsHash = "";` first to let `nix build` report the real hash.
+      specsHash = "sha256-Ophk7VuohWNwRSsX+9ktMVFwA9JFXuumvnKdzqcAhgE=";
+      userPatches = mcpPatches;
+    };
+
+    # 3. Terminal UI profile (`dsh --profile tui`):
+    #    Upstream dsh ships no TUI bundle; this layers the community `dsh-TUI`
+    #    plugin (`https://github.com/ccch1mneyyy/dsh-TUI`) on top of `dsh-base`.
+    profiles.tui = {
+      plugins = [
+        "@deepseek-ai/dsh-base"
+        "@deepseek-harness-tui/dsh-tui@0.16.1"
+      ];
+      specsHash = "sha256-KqSShSzXYsDVLY05tNl2mz/MDTl2Hxzs5m53V/l19+8=";
+      userPatches = mcpPatches;
+    };
+
+    # Optional: machine-wide patch file written to `~/.dsh/cordis.patch.yml`.
+    # Useful when you need YAML `!!js` expressions (e.g. `process.env.TOKEN`),
+    # since inline `userPatches` is JSON-serialisable only.
+    # homePatchesFile = ./home-patches.yml;
   };
-  homePatchesFile = ./home-patches.yml;     # -> ~/.dsh/cordis.patch.yml
-  # settings = { ... };                     # seeds ~/.dsh/settings.yaml once
-};
 ```
 
 Activation materialises each immutable profile into
-`~/.dsh/profiles/<name>` (stamp-based idempotent refresh). The module owns
-only the composition layers; sessions, settings, and credentials under
-`~/.dsh` remain the app's.
+`~/.dsh/profiles/<name>` (stamp-based idempotent refresh via `.dsh-nix-stamp`).
+When a profile's Nix store path changes, activation performs a 3-way merge of
+the new declarative `cordis.patch.yml`, the previous Nix-declared
+`.dsh-nix-patch.yml`, and the live `~/.dsh/profiles/<name>/cordis.patch.yml` so
+runtime settings, custom providers, and custom models saved in the UI survive
+profile rebuilds without duplicating Nix-declared entries. Sessions and
+credentials under `~/.dsh` remain the app's.
 
 ```sh
 dsh --profile headless "task"
 dsh --profile web          # http://127.0.0.1:3080
+dsh --profile tui          # interactive terminal UI
 ```
+
+#### Example: Desktop entry for the Web UI
+
+As an optional convenience, you can declare an XDG `.desktop` launcher entry in
+Home Manager that starts `dsh --profile web` in the background on first click
+and re-opens the existing authenticated URL on subsequent clicks (instead of
+failing with `EADDRINUSE` on port `3080`):
+
+```nix
+xdg.desktopEntries.dsh-web = {
+  name = "DeepSeek Harness Web";
+  genericName = "AI Coding Agent";
+  comment = "Launch the DeepSeek Harness Web UI";
+  # Uses the official SVG icon bundled inside `pkgs.dsh`:
+  icon = "${config.programs.dsh.package}/apps/desktop/resources/icon.svg";
+  terminal = false;
+  categories = [ "Development" "Utility" ];
+  exec = toString (
+    pkgs.writeShellScript "dsh-web-launch" ''
+      runtime_dir="''${XDG_RUNTIME_DIR:-/tmp}"
+      pid_file="$runtime_dir/dsh-web.pid"
+      url_file="$runtime_dir/dsh-web.url"
+
+      # If the daemon is already running and we recorded its tokenized URL,
+      # open a new browser tab to that URL and exit.
+      if [ -s "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null && [ -s "$url_file" ]; then
+        exec ${pkgs.xdg-utils}/bin/xdg-open "$(cat "$url_file")"
+      fi
+
+      # Clean up any stale `dsh --profile web` process (`bin/dsh` is a
+      # `makeWrapper` binary whose `/proc/<pid>/cmdline` is `.../apps/cli/lib/bin.js`).
+      ${pkgs.procps}/bin/pkill -u "$USER" -f 'apps/cli/lib/bin\.js --profile web' 2>/dev/null || true
+      rm -f "$pid_file" "$url_file"
+
+      # Record this shell's PID before `exec` so the `node` process inherits it,
+      # then capture the `dsh web: http://127.0.0.1:3080/?token=...` startup line.
+      umask 077
+      printf '%s\n' "$$" > "$pid_file"
+      exec ${config.programs.dsh.package}/bin/dsh --profile web > >(
+        while IFS= read -r line; do
+          case "$line" in
+            "dsh web: http"*)
+              umask 077
+              printf '%s\n' "''${line#dsh web: }" > "$url_file"
+              ;;
+          esac
+        done
+      )
+    ''
+  );
+};
+```
+
+#### Impermanence / State Persistence
+
+If your root filesystem is ephemeral, persist these directories in `$HOME`:
+- `.dsh` — core DSH state (`.credentials.yaml`, `sessions/`, `storages/`, `profiles/`)
+- `.dsh-tui` — `dsh-TUI` preferences (`theme.json`, `themes/`, `effort.json`, `extension-grants.json`)
+- `.agents` — optional shared user-level agent/skills root (`$DSH_AGENTS_HOME`)
 
 ### Standalone
 
