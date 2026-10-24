@@ -66,23 +66,66 @@ let
 
   profileDir = name: "$HOME/.dsh/profiles/" + lib.escapeShellArg name;
   stampFile = name: "${profileDir name}/.dsh-nix-stamp";
+  declPatchFile = name: "${profileDir name}/.dsh-nix-patch.yml";
+
+  # DSH 0.2+ persists UI settings, custom providers, and custom models as
+  # `{ id, name, config }` entries inside `~/.dsh/profiles/<name>/cordis.patch.yml`.
+  # When re-materialising a profile after its Nix store path changes, perform a
+  # 3-way merge of:
+  #   - fi == 0 ($decl):    new declarative `$artifact/cordis.patch.yml`
+  #   - fi == 1 ($prev):    previous live `~/.dsh/profiles/<name>/cordis.patch.yml`
+  #   - fi == 2 ($oldDecl): previous declarative `.dsh-nix-patch.yml`
+  # Declarative `insert` blocks and Nix-owned `id`s are replaced (or removed if
+  # dropped from Nix), while runtime entries added by DSH (`ConfigEditor`) are
+  # preserved without duplication.
+  mergePatchExpr = ''
+    ((select(fi == 0) // []) | .. style="") as $decl
+    | ((select(fi == 1) // []) | .. style="") as $prev
+    | ((select(fi == 2) // []) | .. style="") as $oldDecl
+    | (($decl + $oldDecl) | map(select(has("id") and (has("insert") | not)) | .id)) as $nixIds
+    | ($prev | map(select(has("id") and (has("insert") | not)) | select(([.id] - $nixIds) | length > 0))) as $kept
+    | ($decl + $kept)
+    | (select(length == 0) | . style="flow") // .
+  '';
 
   activateProfile = name: artifact:
     let
       dir = profileDir name;
       stamp = stampFile name;
+      declPatch = declPatchFile name;
       artifactString = toString artifact;
+      yq = "${pkgs.yq-go}/bin/yq";
     in
     ''
       if [ -f "${stamp}" ] && [ "$(cat "${stamp}")" = ${lib.escapeShellArg artifactString} ]; then
         :
       else
+        prev_patch=""
+        old_decl=""
+        if [ -f "${dir}/cordis.patch.yml" ]; then
+          prev_patch=$(mktemp)
+          cp "${dir}/cordis.patch.yml" "$prev_patch"
+          old_decl=$(mktemp)
+          if [ -f "${declPatch}" ]; then
+            cp "${declPatch}" "$old_decl"
+          else
+            printf '[]\n' > "$old_decl"
+          fi
+        fi
         rm -rf "${dir}"
         mkdir -p "${dir}"
         cp -rL ${lib.escapeShellArg artifactString}/. "${dir}/"
-        # cp -a syncs the destination directory attributes (read-only store
+        # cp -rL syncs the destination directory attributes (read-only store
         # modes) too; dsh rewrites the profile root cordis.yml on every boot.
         chmod -R u+w "${dir}"
+        cp "${dir}/cordis.patch.yml" "${declPatch}"
+        if [ -n "$prev_patch" ]; then
+          if merged=$(${lib.escapeShellArg yq} eval-all ${lib.escapeShellArg mergePatchExpr} "${declPatch}" "$prev_patch" "$old_decl" 2>/dev/null); then
+            printf '%s\n' "$merged" > "${dir}/cordis.patch.yml"
+            chmod 600 "${dir}/cordis.patch.yml"
+          fi
+          rm -f "$prev_patch" "$old_decl"
+        fi
         printf '%s' ${lib.escapeShellArg artifactString} > "${stamp}"
       fi
     '';

@@ -47,6 +47,7 @@ in
     (lib.hasInfix "$HOME/.dsh/profiles/agent" activation)
     (lib.hasInfix ".dsh-nix-stamp" activation)
     (lib.hasInfix "dsh-profile-agent" activation)
+    (lib.hasInfix "eval-all" activation)
     (builtins.length config.home.packages == 1)
   ];
   all = lib.all (x: x) [
@@ -54,6 +55,7 @@ in
     (lib.hasInfix "$HOME/.dsh/profiles/agent" activation)
     (lib.hasInfix ".dsh-nix-stamp" activation)
     (lib.hasInfix "dsh-profile-agent" activation)
+    (lib.hasInfix "eval-all" activation)
     (builtins.length config.home.packages == 1)
   ];
 }
