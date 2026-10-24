@@ -3,7 +3,7 @@
 Nix-native packaging for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`):
 
 1. **`pkgs.dsh`** — the CLI as a reproducible Nix package (pnpm monorepo build,
-   upstream pinned at `47f9438`).
+   upstream pinned at `687f282`, v0.2.1-rc.2).
 2. **Profile packager** — compose DSH profiles from three kinds of plugins in
    one ordered list, with build-time resolution instead of `dsh plugin`'s
    activation-time pnpm reconcile.
@@ -35,6 +35,97 @@ real dsh fail-loud, not a reimplementation: `scripts/check-profile.mjs`
 loads the profile exactly as `dsh --profile` would and lets dsh's own
 audit decide. `checks.profile-boot-web-nobase` proves the check catches a
 web-app-without-base composition (8 pending entries).
+
+## Declaring plugins
+
+A profile is an ordered `plugins` list. Order matters: layers are registered
+in `dsh.profile.bundles` in list order. Each entry is classified by its
+shape, so you never state its kind explicitly.
+
+### 1. In-box bundles (plain strings)
+
+Names shipped with the `dsh` install (`@deepseek-ai/dsh-base`,
+`@deepseek-ai/dsh-web-app`, `@deepseek-ai/dsh-headless`). Nothing is fetched.
+
+```nix
+plugins = [ "@deepseek-ai/dsh-base" "@deepseek-ai/dsh-web-app" ];
+```
+
+### 2. pnpm specs (any other string)
+
+Anything else — `github:owner/repo`, `file:/path`, an npm name — is resolved
+by a fixed-output derivation running `pnpm add`. Pin it with `specsHash`:
+
+```nix
+plugins = [ "@deepseek-ai/dsh-base" "github:someone/cool-plugin" ];
+specsHash = "";   # discovery mode: build once, copy the hash from the error
+```
+
+Leave `specsHash` empty only while discovering; Nix then reports the real
+hash, which you paste back in. One `specsHash` covers all specs of a profile.
+
+### 3. Nix plugins (paths, derivations, `mkPluginBundle`)
+
+A local directory, a fetched source, or an explicit `mkPluginBundle`:
+
+```nix
+plugins = [
+  ./my-plugin                                   # local dir with package.json
+  (pkgs.fetchFromGitHub { owner = "..."; repo = "..."; rev = "..."; hash = "..."; })
+  (plugins.mkPluginBundle {                     # explicit, for derivations
+    packageName = "@me/thing";                  # required unless package.json has a name
+    path = someDerivation;
+    patchPath = "cordis.patch.yml";             # optional override of dsh.bundle.patch
+  })
+];
+```
+
+The plugin is symlinked into the profile's `node_modules/<packageName>`.
+`packageName`s must be unique across Nix plugins.
+
+### What a plugin directory looks like
+
+A plugin joins the layer list only if its `package.json` declares a patch;
+otherwise it is just a dependency available in `node_modules`.
+
+```jsonc
+// package.json
+{
+  "name": "@me/my-plugin",
+  "type": "module",
+  "exports": { "./plugin": "./plugin.mjs" },
+  "dsh": { "bundle": { "patch": "cordis.patch.yml" } }
+}
+```
+
+```yaml
+# cordis.patch.yml — imported verbatim, never transcribed by Nix
+- insert:
+    - id: my-plugin
+      name: ./node_modules/@me/my-plugin/plugin.mjs
+      config: { }
+```
+
+`plugin.mjs` exports `apply(ctx, config)`. See `examples/plugins/tui-core/`
+for a working fixture.
+
+### A full profile
+
+```nix
+profiles.custom = {
+  plugins = [
+    "@deepseek-ai/dsh-base"        # in-box
+    "github:someone/cool-plugin"   # spec, pinned by specsHash
+    ./my-plugin                    # Nix path
+  ];
+  specsHash = "sha256-...";
+  userPatchesFile = ./patches.yml; # optional profile-level cordis.patch.yml
+};
+```
+
+Outside Home Manager, the same fields go to `profilesLib.mkProfileBundle`
+(plus `name` and `inBoxNames`); see `examples/profiles/`. Duplicate
+`packageName`s or an empty profile name fail at evaluation.
 
 ## Usage
 
